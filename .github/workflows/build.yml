@@ -1,0 +1,91 @@
+# Every push to main: the app is built and tested, and both zips are published as the GitHub release
+# v<Version> (the <Version> in src/CacheCleanup/CacheCleanup.csproj). While the version stays the same, each push
+# replaces that release's files and moves its tag to the new commit; a new version number makes a new release.
+# Pull requests are built and tested only.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore CacheCleanup.slnx
+
+      - name: Build
+        run: dotnet build CacheCleanup.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test CacheCleanup.slnx -c Release --no-build --logger "trx;LogFileName=results.trx"
+
+      - name: Publish (framework-dependent, single file)
+        run: >
+          dotnet publish src/CacheCleanup/CacheCleanup.csproj -c Release -r win-x64
+          --self-contained false -p:PublishSingleFile=true -p:DebugType=none
+          -o publish/fdd
+
+      - name: Publish (self-contained, single file)
+        run: >
+          dotnet publish src/CacheCleanup/CacheCleanup.csproj -c Release -r win-x64
+          --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none
+          -o publish/sc
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path publish/fdd/* -DestinationPath dist/CacheCleanup-win-x64.zip
+          Compress-Archive -Path publish/sc/* -DestinationPath dist/CacheCleanup-win-x64-selfcontained.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CacheCleanup-win-x64
+          path: dist/*.zip
+
+  release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: CacheCleanup-win-x64
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/CacheCleanup/CacheCleanup.csproj | head -1)
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # The same version again: the tag moves to this commit and the files are replaced.
+            git tag -f "$TAG" "$GITHUB_SHA"
+            git push -f origin "refs/tags/$TAG"
+            gh release upload "$TAG" dist/*.zip --clobber
+            gh release edit "$TAG" --title "CacheCleanup $TAG"
+          else
+            gh release create "$TAG" dist/*.zip \
+              --target "$GITHUB_SHA" \
+              --title "CacheCleanup $TAG" \
+              --generate-notes
+          fi

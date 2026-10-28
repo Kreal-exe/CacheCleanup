@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CacheCleanup/CacheCleanup.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CacheCleanup.Tests/CacheCleanup.Tests.csproj" />
+  </Folder>
+</Solution>
